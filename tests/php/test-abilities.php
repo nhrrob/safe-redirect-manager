@@ -388,6 +388,68 @@ class SRMTestAbilities extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Test an empty destination is rejected instead of redirecting to the site root
+	 */
+	public function testCreateEmptyTo() {
+		$result = wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
+			array(
+				'redirect_from' => '/empty-to/',
+				'redirect_to'   => '   ',
+			)
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'invalid-argument', $result->get_error_code() );
+	}
+
+	/**
+	 * Test negative status codes are rejected
+	 */
+	public function testCreateNegativeStatusCode() {
+		$result = wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
+			array(
+				'redirect_from' => '/negative/',
+				'redirect_to'   => '/to/',
+				'status_code'   => -301,
+			)
+		);
+
+		$this->assertWPError( $result );
+	}
+
+	/**
+	 * Test a failed overwrite puts a restored rule back in the trash
+	 */
+	public function testCreateFailureRetrashes() {
+		$redirect_id = srm_create_redirect( '/retrash/', '/to/' );
+
+		wp_trash_post( $redirect_id );
+
+		// Make only the overwrite's wp_update_post() fail, after the restore and before the re-trash.
+		$fail_once = function () use ( &$fail_once ) {
+			remove_filter( 'wp_insert_post_empty_content', $fail_once );
+			return true;
+		};
+
+		add_action(
+			'untrashed_post',
+			function () use ( &$fail_once ) {
+				add_filter( 'wp_insert_post_empty_content', $fail_once );
+			}
+		);
+
+		$result = wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
+			array(
+				'redirect_from' => '/retrash/',
+				'redirect_to'   => '/new-to/',
+			)
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'trash', get_post_status( $redirect_id ) );
+	}
+
+	/**
 	 * Test deleting a post that isn't a redirect is rejected
 	 */
 	public function testDeleteNonRedirect() {

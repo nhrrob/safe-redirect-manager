@@ -125,7 +125,7 @@ class SRM_Abilities {
 			'safe-redirect-manager/create-redirect',
 			array(
 				'label'               => __( 'Create Redirect', 'safe-redirect-manager' ),
-				'description'         => __( 'Creates a redirect rule. If a rule with the same "redirect from" path already exists, it is overwritten instead: its destination, status code, regex flag, post status and notes are replaced (omitted fields use their defaults) and its priority is reset. A trashed rule with that path is restored and overwritten. Publishing is refused once the site\'s maximum number of published redirects is reached, unless it overwrites a rule that is already published.', 'safe-redirect-manager' ),
+				'description'         => __( 'Creates a redirect rule. If a rule with the same "redirect from" path already exists, it is overwritten instead: its destination, status code, regex flag, post status and notes are replaced (omitted fields use their defaults), its priority is reset, and its message and force-https setting are kept. A trashed rule with that path is restored and overwritten. Publishing is refused once the site\'s maximum number of published redirects is reached, unless it overwrites a rule that is already published.', 'safe-redirect-manager' ),
 				'category'            => self::CATEGORY,
 				'input_schema'        => array(
 					'type'                 => 'object',
@@ -262,8 +262,9 @@ class SRM_Abilities {
 		// Input validation accepts "false" and "0" as booleans without converting them.
 		$enable_regex = rest_sanitize_boolean( $input['enable_regex'] );
 
-		if ( '' === $redirect_from ) {
-			return new WP_Error( 'invalid-argument', __( 'Redirect from is invalid.', 'safe-redirect-manager' ) );
+		// srm_sanitize_redirect_to() turns an empty destination into "/", the site root.
+		if ( '' === $redirect_from || '' === trim( $input['redirect_to'] ) ) {
+			return new WP_Error( 'invalid-argument', __( 'Redirect from and/or redirect to arguments are invalid.', 'safe-redirect-manager' ) );
 		}
 
 		// Same lookup srm_create_redirect() uses to decide whether it overwrites a rule.
@@ -282,8 +283,8 @@ class SRM_Abilities {
 			return new WP_Error( 'invalid-regex', __( 'Redirect from is not a valid regular expression.', 'safe-redirect-manager' ) );
 		}
 
-		// Same check as srm_create_redirect(), made here so a rejected code can't restore a trashed rule below.
-		if ( ! in_array( absint( $input['status_code'] ), srm_get_valid_status_codes(), true ) ) {
+		// Checked before a trashed rule can be restored below, and without srm_create_redirect()'s absint() so negative codes fail.
+		if ( ! in_array( (int) $input['status_code'], srm_get_valid_status_codes(), true ) ) {
 			return new WP_Error( 'invalid-argument', __( 'Invalid status code.', 'safe-redirect-manager' ) );
 		}
 
@@ -304,6 +305,11 @@ class SRM_Abilities {
 		);
 
 		if ( is_wp_error( $redirect_id ) ) {
+			// Don't leave a rule restored by a call that failed.
+			if ( 'trash' === $existing_status ) {
+				wp_trash_post( $existing_id );
+			}
+
 			return $redirect_id;
 		}
 
