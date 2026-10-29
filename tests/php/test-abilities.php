@@ -507,6 +507,29 @@ class SRMTestAbilities extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Test rejected input returns a client error status over REST, not 500
+	 */
+	public function testRestClientErrorStatus() {
+		$request = new WP_REST_Request( 'DELETE', '/wp-abilities/v1/abilities/safe-redirect-manager/create-redirect/run' );
+		$request->set_query_params(
+			array(
+				'input' => array(
+					'redirect_from' => '/from/',
+					'redirect_to'   => '/to/',
+					'status_code'   => 999,
+				),
+			)
+		);
+
+		$this->assertSame( 400, rest_do_request( $request )->get_status() );
+
+		$request = new WP_REST_Request( 'DELETE', '/wp-abilities/v1/abilities/safe-redirect-manager/delete-redirect/run' );
+		$request->set_query_params( array( 'input' => array( 'id' => self::factory()->post->create() ) ) );
+
+		$this->assertSame( 404, rest_do_request( $request )->get_status() );
+	}
+
+	/**
 	 * Test deleting a post that isn't a redirect is rejected
 	 */
 	public function testDeleteNonRedirect() {

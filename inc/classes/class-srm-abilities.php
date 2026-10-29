@@ -282,7 +282,7 @@ class SRM_Abilities {
 
 		// srm_sanitize_redirect_to() turns an empty destination into "/", the site root.
 		if ( '' === $redirect_from || '' === trim( $input['redirect_to'] ) ) {
-			return new WP_Error( 'invalid-argument', __( 'Redirect from and/or redirect to arguments are invalid.', 'safe-redirect-manager' ) );
+			return new WP_Error( 'invalid-argument', __( 'Redirect from and/or redirect to arguments are invalid.', 'safe-redirect-manager' ), array( 'status' => 400 ) );
 		}
 
 		// Same lookup srm_create_redirect() uses to decide whether it overwrites a rule.
@@ -293,17 +293,17 @@ class SRM_Abilities {
 		// Compiled as SRM_Redirect::match_redirect() does, from the value srm_create_redirect() stores.
 		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, Generic.PHP.NoSilencedErrors.Forbidden -- an invalid pattern is reported as WP_Error below, not a PHP warning.
 		if ( $enable_regex && false === @preg_match( '@' . untrailingslashit( $redirect_from ) . '@', '' ) ) {
-			return new WP_Error( 'invalid-regex', __( 'Redirect from is not a valid regular expression.', 'safe-redirect-manager' ) );
+			return new WP_Error( 'invalid-regex', __( 'Redirect from is not a valid regular expression.', 'safe-redirect-manager' ), array( 'status' => 400 ) );
 		}
 
 		// Checked before a trashed rule can be restored below, and without srm_create_redirect()'s absint() so negative codes fail.
 		if ( ! in_array( (int) $input['status_code'], srm_get_valid_status_codes(), true ) ) {
-			return new WP_Error( 'invalid-argument', __( 'Invalid status code.', 'safe-redirect-manager' ) );
+			return new WP_Error( 'invalid-argument', __( 'Invalid status code.', 'safe-redirect-manager' ), array( 'status' => 400 ) );
 		}
 
 		// Only a call that adds a published rule can push one past the limit, where it would stop being applied.
 		if ( 'publish' === $input['post_status'] && 'publish' !== $existing_status && (int) wp_count_posts( 'redirect_rule' )->publish >= srm_get_max_redirects() ) {
-			return new WP_Error( 'max-redirects-reached', __( 'The maximum number of redirects has been reached.', 'safe-redirect-manager' ) );
+			return new WP_Error( 'max-redirects-reached', __( 'The maximum number of redirects has been reached.', 'safe-redirect-manager' ), array( 'status' => 400 ) );
 		}
 
 		// srm_create_redirect() would republish a trashed rule directly, leaving its trash slug and meta behind.
@@ -345,7 +345,7 @@ class SRM_Abilities {
 		$redirect = get_post( $input['id'] );
 
 		if ( ! $redirect || 'redirect_rule' !== $redirect->post_type ) {
-			return new WP_Error( 'invalid-redirect', __( 'Invalid redirect ID.', 'safe-redirect-manager' ) );
+			return new WP_Error( 'invalid-redirect', __( 'Invalid redirect ID.', 'safe-redirect-manager' ), array( 'status' => 404 ) );
 		}
 
 		if ( 'trash' !== $redirect->post_status && ! wp_trash_post( $redirect->ID ) ) {
