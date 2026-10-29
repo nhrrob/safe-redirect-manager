@@ -125,7 +125,7 @@ class SRM_Abilities {
 			'safe-redirect-manager/create-redirect',
 			array(
 				'label'               => __( 'Create Redirect', 'safe-redirect-manager' ),
-				'description'         => __( 'Creates a redirect rule. If a rule with the same "redirect from" path already exists, it is overwritten instead: its destination, status code, regex flag, post status and notes are replaced (omitted fields use their defaults) and its priority is reset. A trashed rule with that path is restored and overwritten. Refused once the site\'s maximum number of published redirects is reached, unless it overwrites a rule that is not in the trash.', 'safe-redirect-manager' ),
+				'description'         => __( 'Creates a redirect rule. If a rule with the same "redirect from" path already exists, it is overwritten instead: its destination, status code, regex flag, post status and notes are replaced (omitted fields use their defaults) and its priority is reset. A trashed rule with that path is restored and overwritten. Publishing is refused once the site\'s maximum number of published redirects is reached, unless it overwrites a rule that is already published.', 'safe-redirect-manager' ),
 				'category'            => self::CATEGORY,
 				'input_schema'        => array(
 					'type'                 => 'object',
@@ -262,19 +262,23 @@ class SRM_Abilities {
 		// Input validation accepts "false" and "0" as booleans without converting them.
 		$enable_regex = rest_sanitize_boolean( $input['enable_regex'] );
 
+		if ( '' === $redirect_from ) {
+			return new WP_Error( 'invalid-argument', __( 'Redirect from is invalid.', 'safe-redirect-manager' ) );
+		}
+
 		// Same lookup srm_create_redirect() uses to decide whether it overwrites a rule.
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Must match srm_create_redirect(), which is uncached.
 		$existing_id     = (int) $wpdb->get_var( $wpdb->prepare( "SELECT post_id FROM $wpdb->postmeta WHERE meta_key = %s AND meta_value = %s LIMIT 1", '_redirect_rule_from', $redirect_from ) );
 		$existing_status = $existing_id ? get_post_status( $existing_id ) : false;
 
-		// Overwriting a rule that isn't trashed is an edit, which the admin screen also allows at the limit.
-		if ( ( ! $existing_status || 'trash' === $existing_status ) && (int) wp_count_posts( 'redirect_rule' )->publish >= srm_get_max_redirects() ) {
+		// Only a call that adds a published rule can push one past the limit, where it would stop being applied.
+		if ( 'publish' === $input['post_status'] && 'publish' !== $existing_status && (int) wp_count_posts( 'redirect_rule' )->publish >= srm_get_max_redirects() ) {
 			return new WP_Error( 'max-redirects-reached', __( 'The maximum number of redirects has been reached.', 'safe-redirect-manager' ) );
 		}
 
-		// Same delimiter as SRM_Redirect::match_redirect(), on the value srm_create_redirect() stores.
+		// Compiled as SRM_Redirect::match_redirect() does, from the value srm_create_redirect() stores.
 		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, Generic.PHP.NoSilencedErrors.Forbidden -- an invalid pattern is reported as WP_Error below, not a PHP warning.
-		if ( $enable_regex && false === @preg_match( '@' . $redirect_from . '@', '' ) ) {
+		if ( $enable_regex && false === @preg_match( '@' . untrailingslashit( $redirect_from ) . '@', '' ) ) {
 			return new WP_Error( 'invalid-regex', __( 'Redirect from is not a valid regular expression.', 'safe-redirect-manager' ) );
 		}
 
@@ -323,6 +327,9 @@ class SRM_Abilities {
 		if ( 'trash' !== $redirect->post_status && ! wp_trash_post( $redirect->ID ) ) {
 			return new WP_Error( 'error-deleting', __( 'An error occurred deleting the redirect.', 'safe-redirect-manager' ) );
 		}
+
+		// With the trash disabled the post is deleted outright, which doesn't flush the cache via a status change.
+		srm_flush_cache();
 
 		return array( 'id' => $redirect->ID );
 	}

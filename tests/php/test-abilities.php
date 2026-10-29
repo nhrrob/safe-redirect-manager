@@ -300,6 +300,94 @@ class SRMTestAbilities extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Test a from path that sanitizes to nothing is rejected
+	 */
+	public function testCreateEmptyFrom() {
+		$result = wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
+			array(
+				'redirect_from' => '.htaccess',
+				'redirect_to'   => '/to/',
+			)
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'invalid-argument', $result->get_error_code() );
+	}
+
+	/**
+	 * Test the regex check compiles the pattern the way redirects do, without trailing slashes
+	 */
+	public function testCreateRegexTrailingBackslash() {
+		$result = wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
+			array(
+				'redirect_from' => '/foo\\',
+				'redirect_to'   => '/to/',
+				'enable_regex'  => true,
+			)
+		);
+
+		$this->assertIsInt( $result['id'] ?? null );
+	}
+
+	/**
+	 * Test drafts can be created at the maximum but not published over it
+	 */
+	public function testCreateDraftAtMaxRedirects() {
+		srm_create_redirect( '/existing/', '/to/' );
+
+		add_filter(
+			'srm_max_redirects',
+			function () {
+				return 1;
+			}
+		);
+
+		$ability = wp_get_ability( 'safe-redirect-manager/create-redirect' );
+		$draft   = $ability->execute(
+			array(
+				'redirect_from' => '/draft/',
+				'redirect_to'   => '/to/',
+				'post_status'   => 'draft',
+			)
+		);
+
+		$this->assertIsInt( $draft['id'] );
+
+		$result = $ability->execute(
+			array(
+				'redirect_from' => '/draft/',
+				'redirect_to'   => '/to/',
+			)
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'draft', get_post_status( $draft['id'] ) );
+	}
+
+	/**
+	 * Test a delete that skips the trash still stops the redirect
+	 */
+	public function testDeleteWithoutTrashFlushesCache() {
+		$redirect_id = srm_create_redirect( '/no-trash/', '/to/' );
+
+		srm_get_redirects();
+
+		// Deletes outright without a status change, as wp_trash_post() does when EMPTY_TRASH_DAYS is 0.
+		add_filter(
+			'pre_trash_post',
+			function ( $check, $post ) {
+				return (bool) wp_delete_post( $post->ID, true );
+			},
+			10,
+			2
+		);
+
+		wp_get_ability( 'safe-redirect-manager/delete-redirect' )->execute( array( 'id' => $redirect_id ) );
+
+		$this->assertNotContains( $redirect_id, wp_list_pluck( srm_get_redirects(), 'ID' ) );
+	}
+
+	/**
 	 * Test deleting a post that isn't a redirect is rejected
 	 */
 	public function testDeleteNonRedirect() {
