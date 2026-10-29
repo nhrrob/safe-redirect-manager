@@ -74,7 +74,7 @@ class SRM_Abilities {
 			self::CATEGORY,
 			array(
 				'label'       => __( 'Redirects', 'safe-redirect-manager' ),
-				'description' => __( 'Abilities that list, create, update or delete redirects.', 'safe-redirect-manager' ),
+				'description' => __( 'Abilities that list, create or delete redirects.', 'safe-redirect-manager' ),
 			)
 		);
 	}
@@ -125,7 +125,7 @@ class SRM_Abilities {
 			'safe-redirect-manager/create-redirect',
 			array(
 				'label'               => __( 'Create Redirect', 'safe-redirect-manager' ),
-				'description'         => __( 'Creates a redirect rule. If a rule with the same "redirect from" path already exists, it is overwritten instead: its destination, status code, regex flag, post status and notes are replaced (omitted fields use their defaults) and its priority is reset. Refused once the site\'s maximum number of redirects is reached, even when overwriting.', 'safe-redirect-manager' ),
+				'description'         => __( 'Creates a redirect rule. If a rule with the same "redirect from" path already exists, it is overwritten instead: its destination, status code, regex flag, post status and notes are replaced (omitted fields use their defaults) and its priority is reset. A trashed rule with that path is restored and overwritten. Refused once the site\'s maximum number of published redirects is reached, unless it overwrites a rule that is not in the trash.', 'safe-redirect-manager' ),
 				'category'            => self::CATEGORY,
 				'input_schema'        => array(
 					'type'                 => 'object',
@@ -139,9 +139,9 @@ class SRM_Abilities {
 							'description' => __( 'Relative path or absolute URL to redirect to.', 'safe-redirect-manager' ),
 						),
 						'status_code'   => array(
-							'type'    => 'integer',
-							'enum'    => array_map( 'intval', srm_get_valid_status_codes() ),
-							'default' => self::CREATE_DEFAULTS['status_code'],
+							'type'        => 'integer',
+							'default'     => self::CREATE_DEFAULTS['status_code'],
+							'description' => __( 'HTTP status code, e.g. 301 or 302. Must be one of the site\'s valid redirect status codes.', 'safe-redirect-manager' ),
 						),
 						'enable_regex'  => array(
 							'type'        => 'boolean',
@@ -185,7 +185,7 @@ class SRM_Abilities {
 			'safe-redirect-manager/delete-redirect',
 			array(
 				'label'               => __( 'Delete Redirect', 'safe-redirect-manager' ),
-				'description'         => __( 'Moves a redirect rule to the trash by its ID, so it stops redirecting.', 'safe-redirect-manager' ),
+				'description'         => __( 'Moves a redirect rule to the trash by its ID, so it stops redirecting. If the site has the trash disabled (EMPTY_TRASH_DAYS is 0), the rule is deleted permanently instead.', 'safe-redirect-manager' ),
 				'category'            => self::CATEGORY,
 				'input_schema'        => array(
 					'type'                 => 'object',
@@ -225,7 +225,8 @@ class SRM_Abilities {
 	 * @return bool
 	 */
 	public function can_manage_redirects() {
-		return current_user_can( get_post_type_object( 'redirect_rule' )->cap->edit_posts );
+		/** This filter is documented in inc/classes/class-srm-post-type.php */
+		return current_user_can( apply_filters( 'srm_restrict_to_capability', 'srm_manage_redirects' ) );
 	}
 
 	/**
@@ -254,23 +255,44 @@ class SRM_Abilities {
 	 * @return array|WP_Error
 	 */
 	public function create_redirect( $input ) {
-		if ( srm_max_redirects_reached() ) {
+		global $wpdb;
+
+		$input         = wp_parse_args( $input, self::CREATE_DEFAULTS );
+		$redirect_from = srm_sanitize_redirect_from( $input['redirect_from'] );
+		// Input validation accepts "false" and "0" as booleans without converting them.
+		$enable_regex = rest_sanitize_boolean( $input['enable_regex'] );
+
+		// Same lookup srm_create_redirect() uses to decide whether it overwrites a rule.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Must match srm_create_redirect(), which is uncached.
+		$existing_id     = (int) $wpdb->get_var( $wpdb->prepare( "SELECT post_id FROM $wpdb->postmeta WHERE meta_key = %s AND meta_value = %s LIMIT 1", '_redirect_rule_from', $redirect_from ) );
+		$existing_status = $existing_id ? get_post_status( $existing_id ) : false;
+
+		// Overwriting a rule that isn't trashed is an edit, which the admin screen also allows at the limit.
+		if ( ( ! $existing_status || 'trash' === $existing_status ) && (int) wp_count_posts( 'redirect_rule' )->publish >= srm_get_max_redirects() ) {
 			return new WP_Error( 'max-redirects-reached', __( 'The maximum number of redirects has been reached.', 'safe-redirect-manager' ) );
 		}
 
-		$input = wp_parse_args( $input, self::CREATE_DEFAULTS );
-
 		// Same delimiter as SRM_Redirect::match_redirect(), on the value srm_create_redirect() stores.
 		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, Generic.PHP.NoSilencedErrors.Forbidden -- an invalid pattern is reported as WP_Error below, not a PHP warning.
-		if ( $input['enable_regex'] && false === @preg_match( '@' . srm_sanitize_redirect_from( $input['redirect_from'] ) . '@', '' ) ) {
+		if ( $enable_regex && false === @preg_match( '@' . $redirect_from . '@', '' ) ) {
 			return new WP_Error( 'invalid-regex', __( 'Redirect from is not a valid regular expression.', 'safe-redirect-manager' ) );
+		}
+
+		// Same check as srm_create_redirect(), made here so a rejected code can't restore a trashed rule below.
+		if ( ! in_array( absint( $input['status_code'] ), srm_get_valid_status_codes(), true ) ) {
+			return new WP_Error( 'invalid-argument', __( 'Invalid status code.', 'safe-redirect-manager' ) );
+		}
+
+		// srm_create_redirect() would republish a trashed rule directly, leaving its trash slug and meta behind.
+		if ( 'trash' === $existing_status && ! wp_untrash_post( $existing_id ) ) {
+			return new WP_Error( 'error-updating', __( 'An error occurred restoring the redirect from the trash.', 'safe-redirect-manager' ) );
 		}
 
 		$redirect_id = srm_create_redirect(
 			$input['redirect_from'],
 			$input['redirect_to'],
 			$input['status_code'],
-			$input['enable_regex'],
+			$enable_regex,
 			$input['post_status'],
 			0,
 			$input['notes'],

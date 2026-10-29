@@ -89,16 +89,19 @@ class SRMTestAbilities extends WP_UnitTestCase {
 	 * Test a regex redirect in the documented format redirects
 	 */
 	public function testCreateRegexRedirect() {
+		$request_uri            = $_SERVER['REQUEST_URI'] ?? null;
 		$_SERVER['REQUEST_URI'] = '/blog/hello';
 		$actual_redirect        = '';
 
-		wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
+		$created = wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
 			array(
 				'redirect_from' => '/blog/(.*)$',
 				'redirect_to'   => '/news/$1',
 				'enable_regex'  => true,
 			)
 		);
+
+		$this->assertIsInt( $created['id'] ?? null );
 
 		add_action(
 			'srm_do_redirect',
@@ -111,7 +114,112 @@ class SRMTestAbilities extends WP_UnitTestCase {
 
 		SRM_Redirect::factory()->maybe_redirect();
 
+		$_SERVER['REQUEST_URI'] = $request_uri;
+
 		$this->assertSame( '/news/hello', $actual_redirect );
+	}
+
+	/**
+	 * Test enable_regex sent as the string "false" creates a plain rule
+	 */
+	public function testCreateRegexFalseString() {
+		$created = wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
+			array(
+				'redirect_from' => '/a.b/',
+				'redirect_to'   => '/to/',
+				'enable_regex'  => 'false',
+			)
+		);
+
+		$this->assertFalse( (bool) get_post_meta( $created['id'], '_redirect_rule_from_regex', true ) );
+	}
+
+	/**
+	 * Test status codes are read when creating, not when registering
+	 */
+	public function testCreateLateStatusCode() {
+		add_filter(
+			'srm_additional_status_codes',
+			function ( $codes ) {
+				$codes[308] = 'Permanent Redirect';
+				return $codes;
+			}
+		);
+
+		$created = wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
+			array(
+				'redirect_from' => '/late/',
+				'redirect_to'   => '/to/',
+				'status_code'   => 308,
+			)
+		);
+
+		$this->assertSame( 308, (int) get_post_meta( $created['id'], '_redirect_rule_status_code', true ) );
+	}
+
+	/**
+	 * Test creating over a trashed rule restores it from the trash
+	 */
+	public function testCreateRestoresTrashed() {
+		$redirect_id = srm_create_redirect( '/restore-me/', '/to/' );
+		$slug        = get_post_field( 'post_name', $redirect_id );
+
+		wp_get_ability( 'safe-redirect-manager/delete-redirect' )->execute( array( 'id' => $redirect_id ) );
+
+		$created = wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
+			array(
+				'redirect_from' => '/restore-me/',
+				'redirect_to'   => '/new-to/',
+			)
+		);
+
+		$this->assertSame( array( 'id' => $redirect_id ), $created );
+		$this->assertSame( 'publish', get_post_status( $redirect_id ) );
+		$this->assertSame( $slug, get_post_field( 'post_name', $redirect_id ) );
+		$this->assertSame( '', get_post_meta( $redirect_id, '_wp_trash_meta_status', true ) );
+	}
+
+	/**
+	 * Test a rejected create leaves a trashed rule in the trash
+	 */
+	public function testCreateInvalidStatusKeepsTrashed() {
+		$redirect_id = srm_create_redirect( '/stay-trashed/', '/to/' );
+
+		wp_trash_post( $redirect_id );
+
+		$result = wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
+			array(
+				'redirect_from' => '/stay-trashed/',
+				'redirect_to'   => '/new-to/',
+				'status_code'   => 999,
+			)
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'trash', get_post_status( $redirect_id ) );
+	}
+
+	/**
+	 * Test an existing rule can still be overwritten at the maximum
+	 */
+	public function testCreateOverwriteAtMaxRedirects() {
+		$redirect_id = srm_create_redirect( '/existing/', '/to/' );
+
+		add_filter(
+			'srm_max_redirects',
+			function () {
+				return 1;
+			}
+		);
+
+		$result = wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
+			array(
+				'redirect_from' => '/existing/',
+				'redirect_to'   => '/new-to/',
+			)
+		);
+
+		$this->assertSame( array( 'id' => $redirect_id ), $result );
 	}
 
 	/**
