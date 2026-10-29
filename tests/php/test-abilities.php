@@ -450,6 +450,63 @@ class SRMTestAbilities extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Test invalid input at the maximum reports the input error, not the limit
+	 */
+	public function testCreateInvalidAtMaxRedirects() {
+		srm_create_redirect( '/existing/', '/to/' );
+
+		add_filter(
+			'srm_max_redirects',
+			function () {
+				return 1;
+			}
+		);
+
+		$result = wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
+			array(
+				'redirect_from' => '/new/',
+				'redirect_to'   => '/to/',
+				'status_code'   => 999,
+			)
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'invalid-argument', $result->get_error_code() );
+	}
+
+	/**
+	 * Test an overwrite keeps the rule's author
+	 */
+	public function testCreateOverwriteKeepsAuthor() {
+		$author_id   = self::factory()->user->create( array( 'role' => 'editor' ) );
+		$redirect_id = srm_create_redirect( '/authored/', '/to/', 302, false, 'publish', 0, '', $author_id );
+
+		wp_get_ability( 'safe-redirect-manager/create-redirect' )->execute(
+			array(
+				'redirect_from' => '/authored/',
+				'redirect_to'   => '/new-to/',
+			)
+		);
+
+		$this->assertSame( $author_id, (int) get_post_field( 'post_author', $redirect_id ) );
+	}
+
+	/**
+	 * Test list-redirects returns force_https as a boolean
+	 */
+	public function testListForceHttpsBoolean() {
+		$forced = srm_create_redirect( '/forced/', '/to/' );
+		$plain  = srm_create_redirect( '/plain/', '/to/' );
+
+		update_post_meta( $forced, '_force_https', true );
+
+		$redirects = array_column( wp_get_ability( 'safe-redirect-manager/list-redirects' )->execute(), null, 'ID' );
+
+		$this->assertTrue( $redirects[ $forced ]['force_https'] );
+		$this->assertFalse( $redirects[ $plain ]['force_https'] );
+	}
+
+	/**
 	 * Test deleting a post that isn't a redirect is rejected
 	 */
 	public function testDeleteNonRedirect() {

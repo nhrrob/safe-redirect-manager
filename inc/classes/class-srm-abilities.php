@@ -90,7 +90,7 @@ class SRM_Abilities {
 			'safe-redirect-manager/list-redirects',
 			array(
 				'label'               => __( 'List Redirects', 'safe-redirect-manager' ),
-				'description'         => __( 'Returns one page of up to 100 redirect rules (any status except trash) with their from path, destination, status code, regex flag, post status and notes. Request the next page until an empty list is returned.', 'safe-redirect-manager' ),
+				'description'         => __( 'Returns one page of up to 100 redirect rules (any status except trash), each with its ID, from path, destination, status code, message, regex and force-https flags, notes and post status. Request the next page until an empty list is returned.', 'safe-redirect-manager' ),
 				'category'            => self::CATEGORY,
 				'input_schema'        => array(
 					'type'                 => 'object',
@@ -106,7 +106,20 @@ class SRM_Abilities {
 				),
 				'output_schema'       => array(
 					'type'  => 'array',
-					'items' => array( 'type' => 'object' ),
+					'items' => array(
+						'type'       => 'object',
+						'properties' => array(
+							'ID'            => array( 'type' => 'integer' ),
+							'redirect_from' => array( 'type' => 'string' ),
+							'redirect_to'   => array( 'type' => 'string' ),
+							'status_code'   => array( 'type' => 'integer' ),
+							'message'       => array( 'type' => 'string' ),
+							'enable_regex'  => array( 'type' => 'boolean' ),
+							'force_https'   => array( 'type' => 'boolean' ),
+							'notes'         => array( 'type' => 'string' ),
+							'post_status'   => array( 'type' => 'string' ),
+						),
+					),
 				),
 				'execute_callback'    => array( $this, 'list_redirects' ),
 				'permission_callback' => array( $this, 'can_manage_redirects' ),
@@ -125,7 +138,7 @@ class SRM_Abilities {
 			'safe-redirect-manager/create-redirect',
 			array(
 				'label'               => __( 'Create Redirect', 'safe-redirect-manager' ),
-				'description'         => __( 'Creates a redirect rule. If a rule with the same "redirect from" path already exists, it is overwritten instead: its destination, status code, regex flag, post status and notes are replaced (omitted fields use their defaults), its priority is reset, and its message and force-https setting are kept. A trashed rule with that path is restored and overwritten. Publishing is refused once the site\'s maximum number of published redirects is reached, unless it overwrites a rule that is already published.', 'safe-redirect-manager' ),
+				'description'         => __( 'Creates a redirect rule. If a rule with the same "redirect from" path already exists, it is overwritten instead: its destination, status code, regex flag, post status and notes are replaced (omitted fields use their defaults), its priority is reset, and its message, force-https setting and author are kept. A trashed rule with that path is restored and overwritten. Publishing is refused once the site\'s maximum number of published redirects is reached, unless it overwrites a rule that is already published.', 'safe-redirect-manager' ),
 				'category'            => self::CATEGORY,
 				'input_schema'        => array(
 					'type'                 => 'object',
@@ -241,7 +254,12 @@ class SRM_Abilities {
 
 		return array_map(
 			function ( $redirect_id ) {
-				return srm_get_redirect_data( $redirect_id, array( 'post_status', 'notes' ) );
+				$redirect = srm_get_redirect_data( $redirect_id, array( 'post_status', 'notes' ) );
+
+				// Stored as "1" or not at all.
+				$redirect['force_https'] = (bool) $redirect['force_https'];
+
+				return $redirect;
 			},
 			$query->posts
 		);
@@ -272,11 +290,6 @@ class SRM_Abilities {
 		$existing_id     = (int) $wpdb->get_var( $wpdb->prepare( "SELECT post_id FROM $wpdb->postmeta WHERE meta_key = %s AND meta_value = %s LIMIT 1", '_redirect_rule_from', $redirect_from ) );
 		$existing_status = $existing_id ? get_post_status( $existing_id ) : false;
 
-		// Only a call that adds a published rule can push one past the limit, where it would stop being applied.
-		if ( 'publish' === $input['post_status'] && 'publish' !== $existing_status && (int) wp_count_posts( 'redirect_rule' )->publish >= srm_get_max_redirects() ) {
-			return new WP_Error( 'max-redirects-reached', __( 'The maximum number of redirects has been reached.', 'safe-redirect-manager' ) );
-		}
-
 		// Compiled as SRM_Redirect::match_redirect() does, from the value srm_create_redirect() stores.
 		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, Generic.PHP.NoSilencedErrors.Forbidden -- an invalid pattern is reported as WP_Error below, not a PHP warning.
 		if ( $enable_regex && false === @preg_match( '@' . untrailingslashit( $redirect_from ) . '@', '' ) ) {
@@ -286,6 +299,11 @@ class SRM_Abilities {
 		// Checked before a trashed rule can be restored below, and without srm_create_redirect()'s absint() so negative codes fail.
 		if ( ! in_array( (int) $input['status_code'], srm_get_valid_status_codes(), true ) ) {
 			return new WP_Error( 'invalid-argument', __( 'Invalid status code.', 'safe-redirect-manager' ) );
+		}
+
+		// Only a call that adds a published rule can push one past the limit, where it would stop being applied.
+		if ( 'publish' === $input['post_status'] && 'publish' !== $existing_status && (int) wp_count_posts( 'redirect_rule' )->publish >= srm_get_max_redirects() ) {
+			return new WP_Error( 'max-redirects-reached', __( 'The maximum number of redirects has been reached.', 'safe-redirect-manager' ) );
 		}
 
 		// srm_create_redirect() would republish a trashed rule directly, leaving its trash slug and meta behind.
@@ -301,7 +319,7 @@ class SRM_Abilities {
 			$input['post_status'],
 			0,
 			$input['notes'],
-			get_current_user_id()
+			$existing_id ? (int) get_post_field( 'post_author', $existing_id ) : get_current_user_id()
 		);
 
 		if ( is_wp_error( $redirect_id ) ) {
